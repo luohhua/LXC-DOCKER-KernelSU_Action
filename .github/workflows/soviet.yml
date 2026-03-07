@@ -33,11 +33,19 @@ jobs:
         sudo -E apt-get -y -qq install build-essential gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi gcc-arm-linux-gnueabihf
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
   
-    - name: 下载Clang-aosp编译器
+    - name: Deploy Clang
+      if: steps.restore-clang.outputs.cache-hit != 'true'
       run: |
-       if: steps.restore-clang.outputs.cache-hit != 'true'
-        run: |
-          git clone https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r547379.git /home/runner/r547379 --depth=1
+        git clone https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r547379.git /home/runner/r547379 --depth=1
+
+    - name: Save clang
+      if: steps.restore-clang.outputs.cache-hit != 'true'
+      id: cache-clang-save
+      uses: actions/cache/save@v4
+      with:
+        path: /home/runner/r547379
+        key: clang-r547379    
+
 
 
     - name: 下载内核源码
