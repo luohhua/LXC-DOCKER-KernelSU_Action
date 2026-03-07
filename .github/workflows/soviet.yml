@@ -1,0 +1,137 @@
+name: 高端机 谷歌clang14
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: 
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 环境变量配置
+      run: |
+        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
+        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_IMAGE_NAME= >> $GITHUB_ENV
+        cat config.env | grep NEED_DTBO= >> $GITHUB_ENV
+        cat config.env | grep SWITCH_PYTHON= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
+        cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
+
+    - name: 构建编译内核环境
+      run: |
+        sudo apt-get update
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        sudo -E apt-get -y -qq install build-essential gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi gcc-arm-linux-gnueabihf
+        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+  
+    - name: 下载Clang-aosp编译器
+      run: |
+       if: steps.restore-clang.outputs.cache-hit != 'true'
+        run: |
+          git clone https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r547379.git /home/runner/r547379 --depth=1
+
+
+    - name: 下载内核源码
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
+                      
+    - name: 开启lxc和docker配置
+      if: env.ENABLE_LXC_DOCKER == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        wget https://github.com/ego-taboo/LXC-DOCKER-KernelSU_Action/releases/download/2.0.0/add-lxc-docker-custom3.sh
+        chmod 755 add-lxc-docker-custom3.sh
+        ./add-lxc-docker-custom3.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+
+    - name: 添加runc补丁
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        wget https://github.com/ego-taboo/LXC-DOCKER-KernelSU_Action/releases/download/1.0.0/runcpatch.sh
+        chmod a+x runcpatch.sh
+        if [ -f android-kernel/kernel/cgroup.c ]; then
+        ./runcpatch.sh android-kernel/kernel/cgroup.c               
+        fi
+        if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
+        ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
+        fi
+  
+    - name: 配置 ksu
+      if: env.ENABLE_KERNELSU == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+
+    - name: 开启kvm
+      if: env.ENABLE_KVM == 'true'
+      run: |
+         cd $GITHUB_WORKSPACE/kernel_workspace
+         echo "CONFIG_VIRTUALIZATION=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+         echo "CONFIG_KVM=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+         echo "CONFIG_VHOST_NET=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+         echo "CONFIG_VHOST_CROSS_ENDIAN_LEGACY=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+                     
+    - name: 设置ccache缓存
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: build-kernel-mido-kernel
+        max-size: 2G
+
+    - name: 开始编译内核
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/clang-r450784d/bin:$PATH        
+        make -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
+        if [ ${{env.LLVM_CONFIG}}=y ]; then
+        make -j$(nproc --all) CC="ccache clang" CXX=clang++ O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-" LLVM=1 LLVM_IAS=1
+        else
+        make -j$(nproc --all) CC="ccache clang" CXX=clang++ O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+        fi
+
+    - name: 打包内核
+      run: |
+          git clone --depth=1 https://github.com/SOVIET-ANDROID/AnyKernel3.git $HOME/AnyKernel3
+          cp out/arch/arm64/boot/Image.gz-dtb $HOME/AnyKernel3/
+          cp out/arch/arm64/boot/dtbo.img $HOME/AnyKernel3/
+
+          # Determine branch name and commit hash (first 6 characters)
+          BRANCH=$(echo "${GITHUB_REF#refs/heads/}" | sed 's|/|-|g')
+          COMMIT_HASH=$(echo "$GITHUB_SHA" | cut -c1-6)
+          ZIP_NAME="${BRANCH}-${COMMIT_HASH}.zip"
+          echo $ZIP_NAME
+
+          # Export ZIP_NAME for later steps
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+
+          # Move entire AnyKernel3 directory to workspace
+          mv "$HOME/AnyKernel3" "$GITHUB_WORKSPACE/AnyKernel3"
+
+          # Verify contents of AnyKernel3 in workspace
+          ls -lah $GITHUB_WORKSPACE/AnyKernel3
+      shell: bash
+
+
+       
+    - name: 上传内核
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.KERNEL_ZIP_NAME }}
+        path: kernel_workspace/AnyKernel3/*
+
+    - name: 上传dtbo镜像
+      if: env.DTBO_EXSIT == 'true' && env.NEED == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: dtbo-image
+        path: kernel_workspace/android-kernel/out/arch/arm64/boot/dtbo.img
+          
