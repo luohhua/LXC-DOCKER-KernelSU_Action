@@ -106,27 +106,25 @@ jobs:
         make -j$(nproc --all) CC="ccache clang" CXX=clang++ O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
         fi
 
-    - name: 打包内核
-      run: |
-          git clone --depth=1 https://github.com/SOVIET-ANDROID/AnyKernel3.git $HOME/AnyKernel3
-          cp out/arch/arm64/boot/Image.gz-dtb $HOME/AnyKernel3/
-          cp out/arch/arm64/boot/dtbo.img $HOME/AnyKernel3/
-
-          # Determine branch name and commit hash (first 6 characters)
-          BRANCH=$(echo "${GITHUB_REF#refs/heads/}" | sed 's|/|-|g')
-          COMMIT_HASH=$(echo "$GITHUB_SHA" | cut -c1-6)
-          ZIP_NAME="${BRANCH}-${COMMIT_HASH}.zip"
-          echo $ZIP_NAME
-
-          # Export ZIP_NAME for later steps
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-
-          # Move entire AnyKernel3 directory to workspace
-          mv "$HOME/AnyKernel3" "$GITHUB_WORKSPACE/AnyKernel3"
-
-          # Verify contents of AnyKernel3 in workspace
-          ls -lah $GITHUB_WORKSPACE/AnyKernel3
-      shell: bash
+    - name: 准备打包内核
+      run: |       
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone https://github.com/osm0sis/AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
+        sed -i 's/is_slot_device=1;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh        
+        cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
+        if [ ${{ env.NEED_DTBO }} = true ]; then
+            echo "NEED=true" >> $GITHUB_ENV
+            if [ -f android-kernel/out/arch/arm64/boot/dtbo.img ]; then
+                echo "DTBO_EXIST=true" >> $GITHUB_ENV           
+            fi
+        fi        
+        if [ ${{ env.DTBO_EXIST }} = true ]; then
+            cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+        fi  
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md
+        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
 
 
        
